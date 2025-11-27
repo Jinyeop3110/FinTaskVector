@@ -1,7 +1,18 @@
-"""Evaluation metrics for FinQA (Financial Question Answering)."""
+"""
+Evaluation metrics for FinQA (Financial Question Answering).
+
+Following the original FinQA evaluation:
+https://github.com/czyssrs/FinQA
+
+Two main metrics:
+1. Execution Accuracy: Whether the executed result matches the gold answer
+2. Program Accuracy: Whether the predicted program matches the gold program
+"""
 
 import re
 from typing import Optional
+
+from .program import execute_program, str_to_num, parse_program
 
 
 def extract_number(text: str) -> Optional[float]:
@@ -14,6 +25,7 @@ def extract_number(text: str) -> Optional[float]:
     - Currency: $1,234.56
     - Negative: -123, (123)
     - Scientific: 1.23e-4
+    - Yes/No: yes -> 1.0, no -> 0.0
 
     Args:
         text: Text containing a number
@@ -24,10 +36,15 @@ def extract_number(text: str) -> Optional[float]:
     if not text:
         return None
 
-    text = text.strip()
+    text = str(text).strip()
+
+    # Handle yes/no for greater operation results
+    if text.lower() == "yes":
+        return 1.0
+    if text.lower() == "no":
+        return 0.0
 
     # Try to find the last number in the text (usually the answer)
-    # Pattern matches various number formats
     patterns = [
         r"[-+]?\d+\.?\d*%",  # Percentage
         r"[-+]?\$?\d{1,3}(?:,\d{3})*(?:\.\d+)?",  # Currency with commas
@@ -35,7 +52,6 @@ def extract_number(text: str) -> Optional[float]:
         r"\([\d,.]+\)",  # Negative in parentheses
     ]
 
-    # Combine patterns
     combined = "|".join(f"({p})" for p in patterns)
     matches = re.findall(combined, text)
 
@@ -75,87 +91,141 @@ def extract_number(text: str) -> Optional[float]:
         return None
 
 
-def numerical_match(
+def execution_accuracy(
     prediction: str,
     ground_truth: str,
-    tolerance: float = 1e-3,
 ) -> float:
     """
-    Check if predicted number matches ground truth within tolerance.
+    FinQA execution accuracy metric (following original implementation).
+
+    Compares values after rounding to 5 decimal places.
+    This matches the original FinQA evaluation exactly.
 
     Args:
-        prediction: Model prediction (may contain text)
-        ground_truth: Ground truth answer
-        tolerance: Relative tolerance for comparison
+        prediction: Model prediction (number or text containing number)
+        ground_truth: Ground truth (exe_ans from dataset)
 
     Returns:
-        1.0 if match, 0.0 otherwise
+        1.0 if correct, 0.0 otherwise
     """
     pred_num = extract_number(prediction)
     gt_num = extract_number(ground_truth)
 
     if pred_num is None or gt_num is None:
+        # Handle yes/no comparison for greater operations
+        pred_lower = str(prediction).strip().lower()
+        gt_lower = str(ground_truth).strip().lower()
+        if pred_lower in ["yes", "no"] and gt_lower in ["yes", "no"]:
+            return float(pred_lower == gt_lower)
         return 0.0
 
-    # Handle zero case
-    if gt_num == 0:
-        return float(abs(pred_num) < tolerance)
+    # Round to 5 decimal places (following original FinQA)
+    pred_rounded = round(pred_num, 5)
+    gt_rounded = round(gt_num, 5)
 
-    # Relative error
-    rel_error = abs(pred_num - gt_num) / abs(gt_num)
-    return float(rel_error <= tolerance)
+    return float(pred_rounded == gt_rounded)
 
 
-def execution_accuracy(
-    prediction: str,
-    ground_truth: str,
-    tolerance: float = 1e-3,
+def program_accuracy(
+    pred_program: str,
+    gold_program: str,
 ) -> float:
     """
-    FinQA execution accuracy metric.
+    Program accuracy metric.
 
-    Compares extracted numerical values with tolerance.
-    This is the primary metric used in FinQA evaluation.
-
-    Args:
-        prediction: Model prediction
-        ground_truth: Ground truth (exe_ans from dataset)
-        tolerance: Relative tolerance (default 0.1%)
-
-    Returns:
-        1.0 if correct, 0.0 otherwise
-    """
-    return numerical_match(prediction, ground_truth, tolerance)
-
-
-def exact_match(prediction: str, ground_truth: str) -> float:
-    """
-    Exact string match after normalization.
+    Compares predicted program tokens against gold program tokens.
 
     Args:
-        prediction: Model prediction
-        ground_truth: Ground truth answer
+        pred_program: Predicted program string
+        gold_program: Gold program string
 
     Returns:
-        1.0 if exact match, 0.0 otherwise
+        1.0 if programs match, 0.0 otherwise
     """
-    pred_clean = prediction.strip().lower()
-    gt_clean = ground_truth.strip().lower()
-    return float(pred_clean == gt_clean)
+    if not pred_program or not gold_program:
+        return 0.0
+
+    # Parse both programs
+    pred_ops = parse_program(pred_program)
+    gold_ops = parse_program(gold_program)
+
+    if len(pred_ops) != len(gold_ops):
+        return 0.0
+
+    # Compare each operation
+    for (p_op, p_a1, p_a2), (g_op, g_a1, g_a2) in zip(pred_ops, gold_ops):
+        if p_op != g_op:
+            return 0.0
+
+        # Normalize arguments for comparison
+        def normalize_arg(arg):
+            arg = str(arg).strip().lower()
+            # Try to convert to number for comparison
+            num = str_to_num(arg)
+            if num is not None:
+                return round(num, 5)
+            return arg
+
+        if normalize_arg(p_a1) != normalize_arg(g_a1):
+            return 0.0
+        if normalize_arg(p_a2) != normalize_arg(g_a2):
+            return 0.0
+
+    return 1.0
+
+
+def evaluate_program_execution(
+    pred_program: str,
+    gold_answer: str,
+    table: Optional[list] = None,
+) -> float:
+    """
+    Evaluate by executing the predicted program.
+
+    Args:
+        pred_program: Predicted program string
+        gold_answer: Gold answer (exe_ans)
+        table: Optional table data for table operations
+
+    Returns:
+        1.0 if execution result matches gold answer, 0.0 otherwise
+    """
+    if not pred_program:
+        return 0.0
+
+    # Execute the predicted program
+    result = execute_program(pred_program, table)
+
+    if result is None:
+        return 0.0
+
+    # Compare with gold answer
+    gold_num = extract_number(gold_answer)
+
+    if gold_num is None:
+        return 0.0
+
+    # Round both to 5 decimal places
+    result_rounded = round(result, 5)
+    gold_rounded = round(gold_num, 5)
+
+    return float(result_rounded == gold_rounded)
 
 
 def evaluate_predictions(
     predictions: list[str],
     ground_truths: list[str],
-    tolerance: float = 1e-3,
+    programs: Optional[list[str]] = None,
+    pred_programs: Optional[list[str]] = None,
 ) -> dict[str, float]:
     """
     Evaluate predictions using FinQA metrics.
 
     Args:
-        predictions: List of model predictions
+        predictions: List of model predictions (answers)
         ground_truths: List of ground truth answers
-        tolerance: Tolerance for numerical comparison
+        programs: Optional list of gold programs
+        pred_programs: Optional list of predicted programs
 
     Returns:
         Dictionary with metric scores
@@ -163,25 +233,31 @@ def evaluate_predictions(
     assert len(predictions) == len(ground_truths), "Length mismatch"
 
     exec_acc_scores = []
-    exact_match_scores = []
+    prog_acc_scores = []
 
-    for pred, gt in zip(predictions, ground_truths):
-        exec_acc_scores.append(execution_accuracy(pred, gt, tolerance))
-        exact_match_scores.append(exact_match(pred, gt))
+    for i, (pred, gt) in enumerate(zip(predictions, ground_truths)):
+        exec_acc_scores.append(execution_accuracy(pred, gt))
 
-    return {
+        # Program accuracy if both programs provided
+        if pred_programs and programs and i < len(pred_programs) and i < len(programs):
+            prog_acc_scores.append(program_accuracy(pred_programs[i], programs[i]))
+
+    results = {
         "execution_accuracy": sum(exec_acc_scores) / len(exec_acc_scores),
-        "exact_match": sum(exact_match_scores) / len(exact_match_scores),
         "n_samples": len(predictions),
         "n_correct": int(sum(exec_acc_scores)),
     }
+
+    if prog_acc_scores:
+        results["program_accuracy"] = sum(prog_acc_scores) / len(prog_acc_scores)
+
+    return results
 
 
 def evaluate_by_operation(
     predictions: list[str],
     ground_truths: list[str],
     programs: list[str],
-    tolerance: float = 1e-3,
 ) -> dict[str, dict]:
     """
     Evaluate predictions grouped by operation type.
@@ -190,7 +266,6 @@ def evaluate_by_operation(
         predictions: List of model predictions
         ground_truths: List of ground truth answers
         programs: List of program strings (to extract operation)
-        tolerance: Tolerance for numerical comparison
 
     Returns:
         Dictionary with per-operation metrics
@@ -198,15 +273,24 @@ def evaluate_by_operation(
     operations = [
         "add", "subtract", "multiply", "divide",
         "exp", "greater", "table_sum", "table_average",
+        "table_max", "table_min",
     ]
 
     results = {op: {"correct": 0, "total": 0} for op in operations}
-    results["other"] = {"correct": 0, "total": 0}
+    results["multi_step"] = {"correct": 0, "total": 0}
 
     for pred, gt, prog in zip(predictions, ground_truths, programs):
-        score = execution_accuracy(pred, gt, tolerance)
+        score = execution_accuracy(pred, gt)
 
-        # Find which operation this belongs to
+        # Count number of operations
+        ops_in_prog = parse_program(prog)
+        is_multi_step = len(ops_in_prog) > 1
+
+        if is_multi_step:
+            results["multi_step"]["correct"] += score
+            results["multi_step"]["total"] += 1
+
+        # Categorize by first operation
         found_op = False
         for op in operations:
             if op in prog:
@@ -215,10 +299,6 @@ def evaluate_by_operation(
                 found_op = True
                 break
 
-        if not found_op:
-            results["other"]["correct"] += score
-            results["other"]["total"] += 1
-
     # Compute accuracy per operation
     for op in results:
         total = results[op]["total"]
@@ -226,5 +306,48 @@ def evaluate_by_operation(
             results[op]["accuracy"] = results[op]["correct"] / total
         else:
             results[op]["accuracy"] = 0.0
+
+    return results
+
+
+def evaluate_by_num_steps(
+    predictions: list[str],
+    ground_truths: list[str],
+    programs: list[str],
+) -> dict[str, dict]:
+    """
+    Evaluate predictions grouped by number of reasoning steps.
+
+    Args:
+        predictions: List of model predictions
+        ground_truths: List of ground truth answers
+        programs: List of program strings
+
+    Returns:
+        Dictionary with per-step-count metrics
+    """
+    results = {}
+
+    for pred, gt, prog in zip(predictions, ground_truths, programs):
+        score = execution_accuracy(pred, gt)
+
+        # Count steps
+        ops = parse_program(prog)
+        n_steps = len(ops)
+        key = f"{n_steps}_step" if n_steps == 1 else f"{n_steps}_steps"
+
+        if key not in results:
+            results[key] = {"correct": 0, "total": 0}
+
+        results[key]["correct"] += score
+        results[key]["total"] += 1
+
+    # Compute accuracy per step count
+    for key in results:
+        total = results[key]["total"]
+        if total > 0:
+            results[key]["accuracy"] = results[key]["correct"] / total
+        else:
+            results[key]["accuracy"] = 0.0
 
     return results

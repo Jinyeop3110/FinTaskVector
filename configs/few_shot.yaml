@@ -1,8 +1,0 @@
-# Few-shot ICL evaluation config
-model: "Qwen/Qwen2.5-7B-Instruct"
-n_shots: 3
-max_samples: null  # Use all samples
-batch_size: 8
-max_tokens: 256
-tensor_parallel: 1
-seed: 42
