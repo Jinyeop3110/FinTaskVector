@@ -25,12 +25,16 @@ Financial_task_vector/
 │   ├── model.py         # vLLM inference wrapper
 │   ├── evaluate.py      # Evaluation metrics
 │   └── __init__.py
-├── configs/             # YAML config files
+├── configs/             # YAML config files for evaluation
 ├── data/finqa/          # Downloaded dataset
 ├── scripts/             # Shell scripts
-├── outputs/             # Results directory
+├── outputs/             # Evaluation results directory
+├── task_vector/         # Averaged task vector representations
+├── raw_representations/ # Per-sample hidden state representations
 ├── report/              # Reports and analysis
-├── run.py               # Main entry point
+├── run.py               # Main evaluation entry point
+├── task_vector_generation.py   # Task vector extraction script
+├── task_vector_config.yaml     # Task vector extraction config
 └── requirements.txt     # Dependencies
 ```
 
@@ -67,6 +71,14 @@ Financial_task_vector/
 - **Execution Accuracy**: Primary metric (numerical with tolerance)
 - **Exact Match**: String-level equality
 - **Per-Operation Breakdown**: Accuracy by operation type (add, subtract, multiply, etc.)
+
+### 5. Task Vector Extraction (`task_vector_generation.py`)
+
+Extracts hidden representations from transformer layers for analysis. See [Task Vector Extraction](task_vector_extraction.md) for detailed documentation.
+
+- **Token Positions**: Configurable (last, first, or specific indices)
+- **Layers**: Selectable layer indices (e.g., 4, 8, 12, 16, 20, 24, 27)
+- **Output**: Per-sample raw representations + averaged task vectors
 
 ---
 
@@ -111,22 +123,59 @@ python run.py --n_shots 3 --max_samples 50
 python run.py --prompt_type cot --n_shots 2 --max_samples 50
 ```
 
+**Using config files:**
+```bash
+python run.py --config configs/qwen2.5-1.5b/cot_5shot_answer.yaml
+```
+
 ### Step 3: Run Comparison
 
 ```bash
 ./scripts/run_comparison.sh "Qwen/Qwen2.5-7B-Instruct" 100
 ```
 
+### Step 4: Extract Task Vectors
+
+```bash
+python task_vector_generation.py --config task_vector_config.yaml
+```
+
+See [Task Vector Extraction](task_vector_extraction.md) for detailed configuration options.
+
 ---
 
 ## Output Structure
 
+### Evaluation Outputs
+
 ```
-outputs/{model}_{mode}_{timestamp}/
+outputs/{tag}_{model}_{mode}_{timestamp}/
 ├── config.yaml          # Run configuration
 ├── run.log              # Execution log
 ├── predictions.json     # Per-sample predictions
-└── metrics.json         # Aggregated metrics
+├── metrics.json         # Aggregated metrics
+├── comparison.xlsx      # Excel comparison file
+├── all_prompts.txt      # All prompts readable
+└── prompts/             # Individual prompt files
+    ├── prompt_0.txt
+    └── ...
+```
+
+### Task Vector Outputs
+
+```
+task_vector/{tag}_{model}_task_vector_{timestamp}/
+├── config.yaml          # Extraction configuration
+├── metadata.json        # Extraction metadata
+├── task_vectors.pt      # All averaged vectors
+├── layer_4.pt           # Per-layer files
+├── layer_8.pt
+└── ...
+
+raw_representations/{tag}_{model}_task_vector_{timestamp}/
+├── sample_00000.pt      # Per-sample hidden states
+├── sample_00001.pt
+└── ...
 ```
 
 ### Example Metrics Output
@@ -185,6 +234,12 @@ Compute metrics:
          ↓
 Save results (JSON, config, logs)
 ```
+
+---
+
+## Related Documentation
+
+- [Task Vector Extraction](task_vector_extraction.md) - Detailed guide for extracting hidden representations
 
 ---
 

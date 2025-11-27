@@ -3,7 +3,14 @@ data/
 
 # Outputs and results
 outputs/
+task_vector/
+raw_representations/
+reports/
 *.log
+
+# Analysis (raw data and plots are generated)
+analysis/raw_data/
+analysis/plot/
 
 # Python
 __pycache__/

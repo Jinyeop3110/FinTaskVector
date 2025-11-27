@@ -18,11 +18,27 @@ Evaluation:
 import json
 import logging
 import random
+import re
 import requests
 from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def count_program_steps(program: str) -> int:
+    """
+    Count the number of operation steps in a FinQA program.
+
+    Args:
+        program: Program string like "subtract(5829, 5735), divide(#0, 5735)"
+
+    Returns:
+        Number of operation steps
+    """
+    pattern = r'(\w+)\([^)]+\)'
+    matches = re.findall(pattern, program)
+    return len(matches)
 
 DATA_DIR = Path(__file__).parent.parent.parent / "data" / "finqa"
 GITHUB_RAW_BASE = "https://raw.githubusercontent.com/czyssrs/FinQA/main/dataset"
@@ -65,12 +81,19 @@ def download_file(url: str, output_path: Path) -> None:
     logger.info(f"Saved to {output_path}")
 
 
-def download_finqa(output_dir: Optional[str] = None) -> dict:
+def download_finqa(
+    output_dir: Optional[str] = None,
+    n_steps: Optional[int] = None,
+    merge_to_qa: bool = False,
+) -> dict:
     """
     Download the FinQA dataset from GitHub (czyssrs/FinQA).
 
     Args:
         output_dir: Directory to save data
+        n_steps: If specified, only keep examples with exactly this many steps.
+                 Steps are counted as the number of operations in the program.
+        merge_to_qa: If True, merge all splits into a single qa.json file
 
     Returns:
         Dictionary with dataset statistics
@@ -84,10 +107,15 @@ def download_finqa(output_dir: Optional[str] = None) -> dict:
     files = ["train.json", "dev.json", "test.json"]
     for fname in files:
         url = f"{GITHUB_RAW_BASE}/{fname}"
-        download_file(url, raw_dir / fname)
+        raw_path = raw_dir / fname
+        if not raw_path.exists():
+            download_file(url, raw_path)
+        else:
+            logger.info(f"Using cached {raw_path}")
 
     # Process each split
-    stats = {"splits": {}}
+    stats = {"splits": {}, "n_steps_filter": n_steps}
+    all_processed = []  # For merge_to_qa
 
     for fname in files:
         split_name = fname.replace(".json", "")
@@ -95,8 +123,18 @@ def download_finqa(output_dir: Optional[str] = None) -> dict:
             raw_data = json.load(f)
 
         processed = []
+        filtered_count = 0
+
         for entry in raw_data:
             qa = entry.get("qa", {})
+            program = qa.get("program", "")
+
+            # Apply n_steps filter if specified
+            if n_steps is not None:
+                steps = count_program_steps(program)
+                if steps != n_steps:
+                    filtered_count += 1
+                    continue
 
             # Build context from pre_text + table + post_text
             pre_text = " ".join(entry.get("pre_text", []))
@@ -121,61 +159,88 @@ def download_finqa(output_dir: Optional[str] = None) -> dict:
             else:
                 answer = ""
 
-            processed.append({
+            item = {
                 "id": entry.get("id", ""),
                 "context": context,
                 "question": qa.get("question", ""),
                 "answer": answer,
-                "program": qa.get("program", ""),
+                "program": program,
                 "program_re": qa.get("program_re", ""),
                 "gold_inds": qa.get("gold_inds", {}),
+                "split": split_name,  # Track which split this came from
                 "metadata": {
                     "pre_text": entry.get("pre_text", []),
                     "post_text": entry.get("post_text", []),
                     "table": table,
                     "table_ori": entry.get("table_ori", []),
                 },
-            })
+            }
+            processed.append(item)
 
-        # Save processed
+        # Save processed split
         with open(output_dir / f"{split_name}.json", "w") as f:
             json.dump(processed, f, indent=2)
 
+        all_processed.extend(processed)
         stats["splits"][split_name] = len(processed)
-        logger.info(f"Processed {split_name}: {len(processed)} examples")
+
+        if n_steps is not None:
+            logger.info(f"Processed {split_name}: {len(processed)} examples ({filtered_count} filtered out, kept {n_steps}-step only)")
+        else:
+            logger.info(f"Processed {split_name}: {len(processed)} examples")
+
+    # If merge_to_qa, create single qa.json with all data
+    if merge_to_qa:
+        qa_path = output_dir / "qa.json"
+        with open(qa_path, "w") as f:
+            json.dump(all_processed, f, indent=2)
+        logger.info(f"Merged all splits into {qa_path}: {len(all_processed)} examples")
+        stats["qa_json_count"] = len(all_processed)
 
     # Compute overall statistics
-    all_data = []
-    for fname in files:
-        split_name = fname.replace(".json", "")
-        with open(output_dir / f"{split_name}.json") as f:
-            all_data.extend(json.load(f))
-
+    all_data = all_processed
     stats["total_samples"] = len(all_data)
-    stats["avg_context_length"] = sum(len(ex["context"].split()) for ex in all_data) / len(all_data)
-    stats["avg_question_length"] = sum(len(ex["question"].split()) for ex in all_data) / len(all_data)
 
-    # Count program operations
-    ops = {}
-    for ex in all_data:
-        prog = ex.get("program", "")
-        for op in ["add", "subtract", "multiply", "divide", "exp", "greater",
-                   "table_sum", "table_average", "table_max", "table_min"]:
-            if op in prog:
-                ops[op] = ops.get(op, 0) + 1
-    stats["operation_counts"] = ops
+    if all_data:
+        stats["avg_context_length"] = sum(len(ex["context"].split()) for ex in all_data) / len(all_data)
+        stats["avg_question_length"] = sum(len(ex["question"].split()) for ex in all_data) / len(all_data)
+
+        # Count program operations
+        ops = {}
+        step_counts = {}
+        for ex in all_data:
+            prog = ex.get("program", "")
+            steps = count_program_steps(prog)
+            step_counts[steps] = step_counts.get(steps, 0) + 1
+
+            for op in ["add", "subtract", "multiply", "divide", "exp", "greater",
+                       "table_sum", "table_average", "table_max", "table_min"]:
+                if op in prog:
+                    ops[op] = ops.get(op, 0) + 1
+        stats["operation_counts"] = ops
+        stats["step_distribution"] = step_counts
+    else:
+        stats["avg_context_length"] = 0
+        stats["avg_question_length"] = 0
+        stats["operation_counts"] = {}
+        stats["step_distribution"] = {}
 
     with open(output_dir / "statistics.json", "w") as f:
         json.dump(stats, f, indent=2)
 
     logger.info("=" * 50)
     logger.info("FinQA Dataset Statistics (czyssrs/FinQA):")
+    if n_steps is not None:
+        logger.info(f"  Filter: {n_steps}-step examples only")
     logger.info(f"  Total samples: {stats['total_samples']}")
     logger.info(f"  Train: {stats['splits'].get('train', 0)}")
     logger.info(f"  Dev: {stats['splits'].get('dev', 0)}")
     logger.info(f"  Test: {stats['splits'].get('test', 0)}")
-    logger.info(f"  Avg context length: {stats['avg_context_length']:.1f} words")
-    logger.info(f"  Operations: {list(ops.keys())}")
+    if stats.get("avg_context_length"):
+        logger.info(f"  Avg context length: {stats['avg_context_length']:.1f} words")
+    logger.info(f"  Operations: {list(stats.get('operation_counts', {}).keys())}")
+    if merge_to_qa:
+        logger.info(f"  Merged to qa.json: {stats.get('qa_json_count', 0)} examples")
     logger.info("=" * 50)
 
     return stats
@@ -195,31 +260,54 @@ class FinQADataset:
         split: str = "test",
         data_dir: Optional[str] = None,
         seed: int = 42,
+        use_qa_json: bool = False,
     ):
         """
         Initialize the dataset loader.
 
         Args:
-            split: Dataset split ('train', 'dev', 'test')
+            split: Dataset split ('train', 'dev', 'test') or 'all' when use_qa_json=True
             data_dir: Directory containing processed data
             seed: Random seed for sampling
+            use_qa_json: If True, load from qa.json and filter by split field
         """
         self.split = split
         self.data_dir = Path(data_dir) if data_dir else DATA_DIR
         self.seed = seed
         self.rng = random.Random(seed)
+        self.use_qa_json = use_qa_json
         self._data: list[dict] = []
 
     def load(self) -> list[dict]:
         """Load the dataset from processed JSON."""
-        json_path = self.data_dir / f"{self.split}.json"
-        if not json_path.exists():
-            raise FileNotFoundError(
-                f"Processed data not found at {json_path}. "
-                "Run download_finqa() first."
-            )
-        with open(json_path) as f:
-            self._data = json.load(f)
+        if self.use_qa_json:
+            # Load from merged qa.json
+            json_path = self.data_dir / "qa.json"
+            if not json_path.exists():
+                raise FileNotFoundError(
+                    f"qa.json not found at {json_path}. "
+                    "Run download_finqa(merge_to_qa=True) first."
+                )
+            with open(json_path) as f:
+                all_data = json.load(f)
+
+            # Filter by split if not 'all'
+            if self.split == "all":
+                self._data = all_data
+            else:
+                self._data = [ex for ex in all_data if ex.get("split") == self.split]
+
+            logger.info(f"Loaded {len(self._data)} examples from qa.json (split={self.split})")
+        else:
+            # Original behavior: load from split-specific file
+            json_path = self.data_dir / f"{self.split}.json"
+            if not json_path.exists():
+                raise FileNotFoundError(
+                    f"Processed data not found at {json_path}. "
+                    "Run download_finqa() first."
+                )
+            with open(json_path) as f:
+                self._data = json.load(f)
         return self._data
 
     @property
@@ -238,12 +326,13 @@ class FinQADataset:
     def __iter__(self):
         return iter(self.data)
 
-    def sample(self, n: int, exclude_idx: Optional[int] = None) -> list[dict]:
+    def sample(self, n: int, exclude_idx: Optional[int] = None, rng: Optional[random.Random] = None) -> list[dict]:
         """Sample n examples from the dataset."""
+        rng = rng if rng is not None else self.rng
         indices = list(range(len(self.data)))
         if exclude_idx is not None:
             indices.remove(exclude_idx)
-        sampled_indices = self.rng.sample(indices, min(n, len(indices)))
+        sampled_indices = rng.sample(indices, min(n, len(indices)))
         return [self.data[i] for i in sampled_indices]
 
     def get_icl_examples(
@@ -251,11 +340,12 @@ class FinQADataset:
         n_shots: int,
         target_idx: int,
         icl_pool: Optional["FinQADataset"] = None,
+        rng: Optional[random.Random] = None,
     ) -> list[dict]:
         """Get ICL examples for a target question."""
         pool = icl_pool if icl_pool is not None else self
         exclude = target_idx if icl_pool is None else None
-        return pool.sample(n_shots, exclude_idx=exclude)
+        return pool.sample(n_shots, exclude_idx=exclude, rng=rng)
 
     @staticmethod
     def str_to_num(text: str) -> Optional[float]:

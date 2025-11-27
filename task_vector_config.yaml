@@ -1,0 +1,55 @@
+# Task Vector Extraction Configuration
+# =====================================
+# This config specifies which token positions and layers to extract hidden representations from.
+
+# Model to use (should match the config used for prompts)
+model: "Qwen/Qwen2.5-1.5B-Instruct"
+
+# Token positions to extract representations from
+# Options:
+#   - "last": Last token of the prompt (before generation)
+#   - "first": First token
+#   - integers: Specific token indices (0-indexed, negative for from end)
+#   - dict with "search": Find last occurrence of string in prompt
+#     e.g., {"search": "Reasoning:", "offset": 0}
+#   - Can specify multiple positions as a list
+token_positions:
+  - search: "Reasoning:"  # Last occurrence of "Reasoning:" (where model starts reasoning)
+    offset: 0             # 0 = first token of "Reasoning:", 1 = token after, etc.
+  # - "last"              # Last token of prompt
+  # - -2                  # Second to last token
+
+# Layers to extract representations from
+# Qwen2.5-1.5B has 28 layers (0-27)
+# Qwen2.5-7B has 28 layers (0-27)
+layers:
+  - 4
+  - 8
+  - 12
+  - 16
+  - 20
+  - 24
+  - 27  # Last layer
+
+# Prompt configuration to use (references existing config files)
+# This determines how prompts are constructed for extraction
+prompt_config: "configs/qwen2.5-1.5b/cot_5shot_answer.yaml"
+
+# Dataset settings
+split: "train"          # Which split to extract from (train recommended for task vectors)
+max_samples: 256        # Number of samples to extract
+seed: 42
+
+# Batch size for extraction (smaller than inference due to memory for hidden states)
+batch_size: 4
+
+# Tensor parallelism (for multi-GPU)
+tensor_parallel: 4
+max_model_len: 16384
+
+# Output directories
+task_vector_dir: "task_vector"              # Averaged representations
+raw_representations_dir: "raw_representations"  # Per-sample representations
+
+# Session tag for output naming
+tag: "cot_5shot_train"

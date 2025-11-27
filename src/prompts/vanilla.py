@@ -1,52 +1,51 @@
 """Vanilla (zero-shot) prompt template for FinQA."""
 
 from typing import Optional
-from .base import BasePrompt, DSL_DESCRIPTION
+from .base import BasePrompt
 
 
 class VanillaPrompt(BasePrompt):
-    """Zero-shot prompt without examples."""
+    """Zero-shot prompt - direct answer without reasoning."""
 
-    # Template for direct answer mode
-    TEMPLATE_ANSWER = """Context:
+    SYSTEM_PROMPT = (
+        "You are a financial expert. Given the context and question, "
+        "provide the numerical answer. Be precise and give only the final number. "
+        "For yes/no questions, answer with 'yes' or 'no'."
+    )
+
+    TEMPLATE = """Context:
 {context}
 
 Question: {question}
 
-Answer (provide only the numerical value):"""
+Answer (provide only the numerical value, or yes/no for comparison questions):"""
 
-    # Template for program synthesis mode
-    TEMPLATE_PROGRAM = """{dsl_description}
-
-Context:
-{context}
-
-Question: {question}
-
-Output only the program (e.g., "divide(100, 50), multiply(#0, 2)"), nothing else.
-
-Program:"""
-
-    def __init__(
-        self,
-        include_system: bool = True,
-        output_program: bool = False,
-    ):
+    def __init__(self, include_system: bool = True):
         """
         Initialize vanilla prompt.
 
         Args:
             include_system: Whether to include system prompt
-            output_program: If True, prompt for program output; else direct answer
         """
-        super().__init__(include_system, output_program)
+        self.include_system = include_system
+
+    def _get_system_prompt(self) -> str:
+        return self.SYSTEM_PROMPT
+
+    def _to_chat_format(self, user_content: str) -> list[dict]:
+        """Convert to chat message format."""
+        messages = []
+        if self.include_system:
+            messages.append({"role": "system", "content": self._get_system_prompt()})
+        messages.append({"role": "user", "content": user_content})
+        return messages
 
     def format(
         self,
         question: str,
         context: str,
         **kwargs,
-    ) -> str | list[dict]:
+    ) -> list[dict]:
         """
         Format zero-shot prompt.
 
@@ -57,15 +56,8 @@ Program:"""
         Returns:
             Formatted prompt in chat format
         """
-        if self.output_program:
-            user_content = self.TEMPLATE_PROGRAM.format(
-                dsl_description=DSL_DESCRIPTION,
-                context=context,
-                question=question,
-            )
-        else:
-            user_content = self.TEMPLATE_ANSWER.format(
-                context=context,
-                question=question,
-            )
+        user_content = self.TEMPLATE.format(
+            context=context,
+            question=question,
+        )
         return self._to_chat_format(user_content)

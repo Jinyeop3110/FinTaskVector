@@ -15,6 +15,51 @@ from typing import Optional
 from .program import execute_program, str_to_num, parse_program
 
 
+def extract_answer_from_cot(text: str) -> str:
+    """
+    Extract final answer from Chain-of-Thought response.
+
+    Looks for patterns like:
+    - "Answer: 123.45"
+    - "Answer: yes"
+    - "The answer is 123.45"
+    - "Final answer: 123.45"
+
+    If no explicit answer marker found, returns the last line.
+
+    Args:
+        text: Full model response with reasoning
+
+    Returns:
+        Extracted answer string
+    """
+    if not text:
+        return ""
+
+    text = text.strip()
+
+    # Try to find explicit answer markers
+    patterns = [
+        r"(?:^|\n)\s*(?:final\s+)?answer\s*[:=]\s*(.+?)(?:\n|$)",  # Answer: X or Final answer: X
+        r"(?:the\s+)?(?:final\s+)?answer\s+is\s*[:=]?\s*(.+?)(?:\n|$|\.(?:\s|$))",  # The answer is X
+    ]
+
+    for pattern in patterns:
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            answer = match.group(1).strip()
+            # Clean up trailing punctuation except for % sign
+            answer = re.sub(r'[.,;:!?]+$', '', answer)
+            return answer
+
+    # Fallback: return the last non-empty line
+    lines = [line.strip() for line in text.split('\n') if line.strip()]
+    if lines:
+        return lines[-1]
+
+    return text
+
+
 def extract_number(text: str) -> Optional[float]:
     """
     Extract numerical value from text.
@@ -91,39 +136,94 @@ def extract_number(text: str) -> Optional[float]:
         return None
 
 
+def normalize_boolean(text: str) -> Optional[str]:
+    """
+    Normalize yes/no/true/false/1/0 to standard form.
+
+    Args:
+        text: Input text
+
+    Returns:
+        'yes', 'no', or None if not a boolean
+    """
+    text = str(text).strip().lower()
+
+    # Direct matches
+    yes_values = {'yes', 'true', '1', '1.0'}
+    no_values = {'no', 'false', '0', '0.0'}
+
+    if text in yes_values:
+        return 'yes'
+    if text in no_values:
+        return 'no'
+
+    # Check if text contains yes/no
+    has_yes = 'yes' in text or 'true' in text
+    has_no = 'no' in text or 'false' in text
+
+    # Only return if unambiguous
+    if has_yes and not has_no:
+        return 'yes'
+    if has_no and not has_yes:
+        return 'no'
+
+    return None
+
+
+def is_close(pred: float, gold: float, rel_tol: float = 0.01) -> bool:
+    """
+    Check if prediction is within relative tolerance of gold.
+
+    Args:
+        pred: Predicted value
+        gold: Gold value
+        rel_tol: Relative tolerance (default 1%)
+
+    Returns:
+        True if |pred - gold| <= rel_tol * |gold|
+    """
+    if gold == 0:
+        # For zero gold, use absolute comparison
+        return abs(pred) < 1e-5
+    return abs(pred - gold) <= rel_tol * abs(gold)
+
+
 def execution_accuracy(
     prediction: str,
     ground_truth: str,
+    rel_tol: float = 0.01,
 ) -> float:
     """
-    FinQA execution accuracy metric (following original implementation).
+    FinQA execution accuracy metric with ±1% tolerance for numeric values.
 
-    Compares values after rounding to 5 decimal places.
-    Also handles percentage/decimal format mismatches:
-    - If model outputs 14.6 (meaning 14.6%) and gold is 0.146, they should match
+    Handles:
+    - Numeric matching with ±1% relative tolerance
+    - Percentage/decimal format mismatches (14.6 vs 0.146)
+    - Boolean matching (yes/no/true/false/1/0)
 
     Args:
         prediction: Model prediction (number or text containing number)
         ground_truth: Ground truth (exe_ans from dataset)
+        rel_tol: Relative tolerance for numeric matching (default 0.01 = 1%)
 
     Returns:
         1.0 if correct, 0.0 otherwise
     """
-    # Handle yes/no comparison first
-    pred_lower = str(prediction).strip().lower()
-    gt_lower = str(ground_truth).strip().lower()
+    pred_str = str(prediction).strip()
+    gt_str = str(ground_truth).strip()
 
-    # Check for yes/no in prediction text
-    if "yes" in pred_lower or "no" in pred_lower:
-        if gt_lower in ["yes", "no"]:
-            # Extract yes/no from prediction
-            if "yes" in pred_lower and "no" not in pred_lower:
-                return float(gt_lower == "yes")
-            elif "no" in pred_lower and "yes" not in pred_lower:
-                return float(gt_lower == "no")
+    # Handle boolean comparison first
+    pred_bool = normalize_boolean(pred_str)
+    gt_bool = normalize_boolean(gt_str)
 
-    if gt_lower in ["yes", "no"]:
-        return 0.0  # Gold is yes/no but prediction doesn't contain it
+    # If gold is boolean, prediction must also be boolean to match
+    if gt_bool is not None:
+        if pred_bool is not None:
+            return float(pred_bool == gt_bool)
+        return 0.0
+
+    # If prediction looks boolean but gold is not, try to extract number
+    # (e.g., prediction might be "yes" but gold is numeric)
 
     pred_num = extract_number(prediction)
     gt_num = extract_number(ground_truth)
@@ -131,27 +231,23 @@ def execution_accuracy(
     if pred_num is None or gt_num is None:
         return 0.0
 
-    # Round to 5 decimal places (following original FinQA)
-    pred_rounded = round(pred_num, 5)
-    gt_rounded = round(gt_num, 5)
-
-    # Direct match
-    if pred_rounded == gt_rounded:
+    # Direct match with tolerance
+    if is_close(pred_num, gt_num, rel_tol):
         return 1.0
 
     # Handle percentage/decimal format mismatch
     # Case 1: Model outputs percentage form (e.g., 14.6) but gold is decimal (0.146)
     # This happens when model outputs "14.6" meaning 14.6% without the % sign
     if gt_num != 0 and 0 < abs(gt_num) < 1:  # Gold looks like a decimal percentage
-        pred_as_decimal = round(pred_num / 100, 5)
-        if pred_as_decimal == gt_rounded:
+        pred_as_decimal = pred_num / 100
+        if is_close(pred_as_decimal, gt_num, rel_tol):
             return 1.0
 
     # Case 2: Model outputs decimal (0.146) but gold is percentage form (14.6)
     # Less common but handle for completeness
     if pred_num != 0 and 0 < abs(pred_num) < 1:
-        pred_as_percent = round(pred_num * 100, 5)
-        if pred_as_percent == gt_rounded:
+        pred_as_percent = pred_num * 100
+        if is_close(pred_as_percent, gt_num, rel_tol):
             return 1.0
 
     return 0.0

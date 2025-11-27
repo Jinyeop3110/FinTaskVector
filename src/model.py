@@ -1,8 +1,31 @@
 """vLLM inference wrapper for Financial QA."""
 
+import time
+from dataclasses import dataclass
 from typing import Optional
 
 from vllm import LLM, SamplingParams
+
+
+@dataclass
+class GenerationStats:
+    """Statistics from generation."""
+    responses: list[str]
+    total_input_tokens: int
+    total_output_tokens: int
+    latency_seconds: float
+
+    @property
+    def avg_input_tokens(self) -> float:
+        return self.total_input_tokens / len(self.responses) if self.responses else 0
+
+    @property
+    def avg_output_tokens(self) -> float:
+        return self.total_output_tokens / len(self.responses) if self.responses else 0
+
+    @property
+    def tokens_per_second(self) -> float:
+        return self.total_output_tokens / self.latency_seconds if self.latency_seconds > 0 else 0
 
 
 class VLLMInference:
@@ -44,7 +67,8 @@ class VLLMInference:
         temperature: float = 0.0,
         top_p: float = 1.0,
         stop: Optional[list[str]] = None,
-    ) -> list[str]:
+        return_stats: bool = False,
+    ) -> list[str] | GenerationStats:
         """
         Generate responses for a batch of prompts.
 
@@ -54,9 +78,10 @@ class VLLMInference:
             temperature: Sampling temperature
             top_p: Top-p sampling parameter
             stop: Stop sequences
+            return_stats: If True, return GenerationStats with token counts and latency
 
         Returns:
-            List of generated responses
+            List of generated responses, or GenerationStats if return_stats=True
         """
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
@@ -76,8 +101,23 @@ class VLLMInference:
         else:
             formatted_prompts = prompts
 
+        start_time = time.time()
         outputs = self.llm.generate(formatted_prompts, sampling_params)
-        return [output.outputs[0].text.strip() for output in outputs]
+        latency = time.time() - start_time
+
+        responses = [output.outputs[0].text.strip() for output in outputs]
+
+        if return_stats:
+            total_input_tokens = sum(len(output.prompt_token_ids) for output in outputs)
+            total_output_tokens = sum(len(output.outputs[0].token_ids) for output in outputs)
+            return GenerationStats(
+                responses=responses,
+                total_input_tokens=total_input_tokens,
+                total_output_tokens=total_output_tokens,
+                latency_seconds=latency,
+            )
+
+        return responses
 
     def generate_single(
         self,
