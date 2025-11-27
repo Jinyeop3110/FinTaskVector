@@ -27,15 +27,15 @@ Rules:
 4. Chain operations sequentially. Each operation can reference previous results with #N.
 
 Example programs:
-- "What is 100 divided by 50, then multiplied by 2?" → divide(100, 50), multiply(#0, 2)
-- "Is revenue (500) greater than cost (300)?" → greater(500, 300)
-- "What is the change from 100 to 150 as a percentage?" → subtract(150, 100), divide(#0, 100), multiply(#1, const_100)
-- "What is the sum of 1000 and 2500?" → add(1000, 2500)
-- "What is net income if revenue is 5000 and expenses are 3200?" → subtract(5000, 3200)
-- "What is the profit margin if profit is 800 and revenue is 4000?" → divide(800, 4000), multiply(#0, const_100)
-- "What is 15% of 2000?" → multiply(2000, 15%), divide(#0, const_100)
-- "What is the year-over-year growth from 1200 to 1500?" → subtract(1500, 1200), divide(#0, 1200), multiply(#1, const_100)
-- "What is the total in millions if the value is 5.2 million?" → multiply(5.2, const_1000000)
+- "What percentage of total revenue (7018) is segment revenue (1947)?" → divide(1947, 7018)
+- "What is the change in net assets from 2303 to 2309.9?" → subtract(2309.9, 2303)
+- "What is the growth rate from 991.1 to 959.2?" → subtract(959.2, 991.1), divide(#0, 991.1)
+- "What is the total of 15553 and 7376?" → add(15553, 7376)
+- "What is the percentage decrease from 34.8 to 1.2?" → subtract(34.8, 1.2), divide(#0, 34.8), multiply(#1, const_100)
+- "Did value A (11000) exceed value B (3300000)?" → multiply(607, 18.13), multiply(#0, const_1000), multiply(3.3, const_1000000), greater(#1, #2)
+- "What is total operating expenses if segment expense is 9896 and it represents 23.6%?" → divide(9896, 23.6%)
+- "Convert 1327657 shares at $42.61 to millions." → multiply(1327657, 42.61), divide(#0, const_1000000)
+- "What is the average of values in the revenue row?" → table_average(revenue)
 """.strip()
 
 
