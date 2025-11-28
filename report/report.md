@@ -30,7 +30,26 @@ Our main results include:
 
 ---
 
-## 2. Methods
+## 2. Background
+
+### 2.1 Few-Shot In-Context Learning
+
+In-context learning (ICL) is a paradigm where language models learn to perform tasks by conditioning on a few demonstration examples provided in the prompt, without any parameter updates (Brown et al., 2020). Unlike traditional few-shot learning that adapts model parameters, ICL keeps the pretrained model frozen and relies entirely on the prompt to guide inference.
+
+In few-shot ICL, the prompt contains k input-output pairs (demonstrations) followed by a new query. The model implicitly infers the task from these examples and generates an appropriate response. For instance, given three financial calculation examples showing how to extract values from tables and compute ratios, the model learns to apply similar reasoning to new questions. This approach is particularly powerful because it enables rapid task adaptation without costly fine-tuning, though it comes at the cost of increased prompt length and inference latency.
+
+### 2.2 Steering Vectors and Activation Engineering
+
+Steering vectors, introduced by Turner et al. (2023), provide a method to control model behavior by directly modifying intermediate activations during inference. The core technique, called Activation Addition (ActAdd), works by:
+
+1. **Computing a steering vector**: Run the model on two contrasting prompts (e.g., with vs. without few-shot examples) and compute the difference in hidden state activations at a specific layer.
+2. **Applying the vector**: During inference on new inputs, add the steering vector (scaled by factor α) to the model's hidden states at the chosen layer.
+
+This approach offers a key advantage: it can potentially replicate the effect of lengthy prompts without actually including them. If the steering vector captures the "essence" of what few-shot examples contribute to the model's internal representations, we can achieve similar benefits with zero additional input tokens—dramatically reducing inference cost.
+
+---
+
+## 3. Methods
 
 **Methods Overview:**
 
@@ -41,7 +60,7 @@ Our main results include:
 | FSV extraction | Distill few-shot into steering vector | Layer (12, 16), token position |
 | FSV evaluation | Test if FSV can replace ICL tokens | Scale α (0.1-1.0) |
 
-### 2.1 Dataset
+### 3.1 Dataset
 
 We use the FinQA dataset (Chen et al., 2021), which contains financial QA pairs derived from S&P 500 companies' earnings reports. Each sample includes:
 
@@ -65,7 +84,7 @@ We evaluate on 429 samples from the combined dataset, focusing on multi-step rea
 
 This example illustrates the multi-step numerical reasoning required: extracting values from tables, performing arithmetic operations, and combining intermediate results.
 
-### 2.2 Model
+### 3.2 Model
 
 We use **Qwen2.5-1.5B-Instruct** (Qwen Team, 2024), a 1.5 billion parameter instruction-tuned model from the Qwen2.5 family. This relatively lightweight model was chosen to represent scenarios where computational resources are limited, which is common in production financial systems requiring low latency.
 
@@ -77,7 +96,7 @@ We use **Qwen2.5-1.5B-Instruct** (Qwen Team, 2024), a 1.5 billion parameter inst
 | Layers | 28 |
 | Context length | 32,768 tokens |
 
-### 2.3 Inference Setup
+### 3.3 Inference Setup
 
 Inference is performed using the vLLM library for efficient batch processing and the HuggingFace Transformers library for steering vector experiments.
 
@@ -91,11 +110,11 @@ Inference is performed using the vLLM library for efficient batch processing and
 
 **Hardware:** Experiments were conducted on NVIDIA H100 GPUs (80GB HBM3). The small model size (1.5B parameters) allows single-GPU inference, enabling rapid experimentation.
 
-### 2.4 Prompting Strategies
+### 3.4 Prompting Strategies
 
 We evaluate the following prompting configurations:
 
-#### 2.4.1 Vanilla Zero-Shot
+#### 3.4.1 Vanilla Zero-Shot
 
 Direct question answering without reasoning demonstrations:
 
@@ -105,7 +124,7 @@ Question: {question}
 Answer:
 ```
 
-#### 2.4.2 Chain-of-Thought (CoT) Zero-Shot
+#### 3.4.2 Chain-of-Thought (CoT) Zero-Shot
 
 CoT prompting without ICL examples, using the instruction to "think step by step":
 
@@ -115,7 +134,7 @@ Question: {question}
 Let's think step by step:
 ```
 
-#### 2.4.3 Chain-of-Thought (CoT) N-Shot (N = 1-5)
+#### 3.4.3 Chain-of-Thought (CoT) N-Shot (N = 1-5)
 
 CoT prompting with N in-context learning examples prepended to the query. The prompt structure is:
 
@@ -151,19 +170,19 @@ Each demonstration includes:
 ICL examples are sampled randomly from the training set. We run 4 experiments with different sampling seeds (42, 43, 44, 45) to measure variance due to example selection.
 
 
-### 2.5 Financial Steering Vector (FSV)
+### 3.5 Financial Steering Vector (FSV)
 
 > **In short**: Extract hidden states at "Reasoning:" position → compute mean difference between 3-shot and 0-shot → add scaled difference during inference.
 
 We investigate whether the performance gains from in-context learning can be distilled into a steering vector that can be applied to zero-shot prompts. The key insight is that by comparing hidden representations between 0-shot and N-shot prompts, we can extract a direction in activation space that encodes the "reasoning pattern" demonstrated by ICL examples.
 
-#### 2.5.1 Token Position Extraction
+#### 3.5.1 Token Position Extraction
 
 A key design choice is **where** to extract hidden representations. We extract at the token position corresponding to "Reasoning:" in the prompt—the point where the model transitions from input processing to reasoning generation.
 
 Since prompts may contain multiple occurrences of "Reasoning:" (from ICL demonstrations), we find the **last occurrence** using progressive token decoding. This ensures we extract at the semantically meaningful position where the model begins its reasoning output, rather than an arbitrary position. See Appendix D for implementation details.
 
-#### 2.5.2 Position-Aligned Hidden State Extraction
+#### 3.5.2 Position-Aligned Hidden State Extraction
 
 A critical challenge in comparing hidden states between 0-shot and N-shot prompts is that they have different sequence lengths. In models using Rotary Position Embeddings (RoPE)—a positional encoding method that applies rotation matrices to token representations based on their position—tokens at different absolute positions receive different positional encodings, which can confound the semantic comparison.
 
@@ -180,7 +199,7 @@ N-shot:  [actual prompt tokens with ICL examples        ]
 
 With left-padding, the target token ("Reasoning:") is at the **same absolute position** for both conditions, eliminating RoPE positional encoding differences.
 
-#### 2.5.3 Steering Vector Computation and Application
+#### 3.5.3 Steering Vector Computation and Application
 
 **Computation:** For each sample $i$ in the dataset:
 
@@ -203,7 +222,7 @@ $$h'_{t} = h_{t} + \alpha \cdot \mathbf{v}_{\text{steer}}^{\ell}$$
 
 where $\alpha$ is a scaling factor that controls the steering strength. We evaluate $\alpha \in \{0.0, 0.1, 0.2, 0.5, 1.0\}$ across layers 12 and 16.
 
-#### 2.5.4 Implementation Details
+#### 3.5.4 Implementation Details
 
 | Parameter | Value |
 |-----------|-------|
@@ -218,7 +237,7 @@ where $\alpha$ is a scaling factor that controls the steering strength. We evalu
 
 Batched extraction sorts samples by N-shot length to minimize padding waste and uses dynamic padding per batch. The multi-layer extraction allows us to compare steering effectiveness across different depths of the model.
 
-### 2.6 Evaluation Metrics
+### 3.6 Evaluation Metrics
 
 **Answer Accuracy**: The primary metric, measuring whether the predicted numerical value matches the gold answer within a relative tolerance of ε = 0.01 (1%):
 
@@ -230,9 +249,9 @@ where $y_i$ is the gold answer and $\hat{y}_i$ is the predicted answer. This rel
 
 ---
 
-## 3. Results
+## 4. Results
 
-### 3.1 FinQA Evaluation for Vanilla, 0-shot CoT and N-shot CoT
+### 4.1 FinQA Evaluation for Vanilla, 0-shot CoT and N-shot CoT
 
 Table 1 presents the answer accuracy across all prompting configurations. We evaluate 256 samples with 4 random seeds per N-shot configuration (seeds 42, 43, 44, 45) to account for ICL sampling variance.
 
@@ -253,7 +272,7 @@ Table 1 presents the answer accuracy across all prompting configurations. We eva
 ![Latency comparison across prompting configurations](../figures/1_evaluation/latency_comparison_20251128_102739.png)
 *Figure 2: Latency and input token count across prompting configurations. Left: Average latency per sample. Right: Average input tokens per prompt.*
 
-#### 3.1.1 Key Findings
+#### 4.1.1 Key Findings
 
 **Finding 1: CoT dramatically improves over vanilla prompting.**
 
@@ -271,7 +290,7 @@ Performance peaks at 3-shot (32.08%) and then drops at 4-shot (30.00%), suggesti
 
 Input token count grows substantially with N-shots (~1,350 additional tokens per example), and latency increases accordingly from 68.7s (0-shot) to 97.1s (4-shot). This context cost provides diminishing returns beyond 3-shot, as accuracy actually decreases while latency continues to rise (Figure 2).
 
-### 3.2 Financial Steering Vector Results
+### 4.2 Financial Steering Vector Results
 
 We evaluate FSV extracted from layers 12 and 16, applied to 0-shot prompts with varying scaling factors.
 
@@ -303,17 +322,17 @@ We evaluate FSV extracted from layers 12 and 16, applied to 0-shot prompts with 
 
 ---
 
-## 4. Discussion
+## 5. Discussion
 
-### 4.1 CoT and Few-Shot Learning
+### 5.1 CoT and Few-Shot Learning
 
 CoT prompting provides a 3.5× improvement over vanilla prompting (29.14% vs 8.39%), demonstrating that explicit reasoning instructions are essential for financial numerical reasoning in smaller LLMs. Adding few-shot examples yields further incremental gains, with 3-shot achieving peak performance (32.08%). Beyond 3 examples, performance degrades due to context saturation (~6,605 tokens at 4-shot), suggesting a trade-off between demonstration diversity and context efficiency.
 
-### 4.2 Why α=0.2 is Optimal for Steering
+### 5.2 Why α=0.2 is Optimal for Steering
 
 The optimal scaling factor α=0.2 reflects the **small perturbation principle**: full scale (α=1.0) overshoots the target representation and destabilizes generation. Performance peaks at α=0.2 then degrades at higher scales, consistent with prior work on activation engineering (Turner et al., 2023).
 
-### 4.3 Limitations
+### 5.3 Limitations
 
 1. **Single model evaluation**: We only evaluate Qwen2.5-1.5B-Instruct. Results may differ for larger models or other architectures.
 
@@ -321,7 +340,7 @@ The optimal scaling factor α=0.2 reflects the **small perturbation principle**:
 
 3. **Answer-only extraction**: We extract only the final numerical answer, not evaluating the quality of intermediate reasoning steps.
 
-### 4.4 Future Work
+### 5.4 Future Work
 
 1. **Steering vector optimization**: Further tuning of extraction positions, layers, and scaling factors to maximize the effectiveness of Financial Steering Vectors.
 
@@ -333,7 +352,7 @@ The optimal scaling factor α=0.2 reflects the **small perturbation principle**:
 
 ---
 
-## 5. Conclusion
+## 6. Conclusion
 
 This study demonstrates that Chain-of-Thought prompting significantly improves financial numerical reasoning performance for smaller LLMs, with a 3.5× improvement over vanilla prompting (29.14% vs. 8.39%). CoT 3-shot achieves the best performance (32.08% accuracy) on FinQA using Qwen2.5-1.5B-Instruct.
 
