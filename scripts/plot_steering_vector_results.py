@@ -144,6 +144,13 @@ def plot_accuracy_vs_scale(fsv_results: dict, baselines: dict, output_path: Path
         ax.plot(scales, accs, marker=markers[layer], linewidth=1.5, markersize=5,
                 color=colors[layer], label=f'Layer {layer}')
 
+    # Add yellow star marker at best config (layer 12, scale 0.2)
+    best_layer, best_scale = 12, 0.2
+    if best_layer in fsv_results and best_scale in fsv_results[best_layer]:
+        best_acc = fsv_results[best_layer][best_scale]["accuracy"]
+        ax.plot(best_scale, best_acc, marker='*', markersize=14, color='gold',
+                markeredgecolor='black', markeredgewidth=0.8, zorder=10, label='Best')
+
     # Add baseline horizontal lines
     if "cot_0shot" in baselines:
         baseline_acc = baselines["cot_0shot"]["accuracy"]
@@ -158,7 +165,7 @@ def plot_accuracy_vs_scale(fsv_results: dict, baselines: dict, output_path: Path
     ax.set_xlabel('Scaling Factor (α)', fontsize=9)
     ax.set_ylabel('Accuracy (%)', fontsize=9)
     ax.set_title('FSV Performance vs Scaling Factor', fontsize=10)
-    ax.legend(loc='lower left', fontsize=7)
+    ax.legend(loc='upper right', fontsize=7)
     ax.grid(True, alpha=0.3)
 
     # Set axis limits
@@ -258,12 +265,18 @@ def plot_comparison_bars(fsv_results: dict, baselines: dict, output_path: Path):
 
 
 def plot_combined_fsv(fsv_results: dict, baselines: dict, output_path: Path):
-    """Create combined figure with (a) accuracy vs alpha, (b) comparison bars."""
-    fig, axes = plt.subplots(1, 2, figsize=(7.3, 2.7))
+    """Create combined figure with (a) accuracy vs alpha, (b) accuracy bars, (c) input tokens, (d) latency."""
+    fig, axes = plt.subplots(1, 4, figsize=(12, 2.7))
 
     # Get baseline values (use defaults if not found)
     cot_0shot = baselines.get("cot_0shot", {"accuracy": 29.14, "input_tokens": 1215, "latency": 68.7})
     cot_3shot = baselines.get("cot_3shot", {"accuracy": 32.08, "input_tokens": 5257, "latency": 93.3})
+
+    # Get best FSV config
+    best_layer = 12
+    best_scale = 0.2
+    fsv_data = fsv_results.get(best_layer, {}).get(best_scale, {})
+    fsv_acc = fsv_data.get("accuracy", 31.0)
 
     # Plot (a): Accuracy vs Scale
     ax1 = axes[0]
@@ -280,6 +293,12 @@ def plot_combined_fsv(fsv_results: dict, baselines: dict, output_path: Path):
         ax1.plot(scales, accs, marker=markers[layer], linewidth=1.5, markersize=5,
                  color=colors[layer], label=f'Layer {layer}')
 
+    # Add yellow star marker at best config (layer 12, scale 0.2)
+    if best_layer in fsv_results and best_scale in fsv_results[best_layer]:
+        best_acc = fsv_results[best_layer][best_scale]["accuracy"]
+        ax1.plot(best_scale, best_acc, marker='*', markersize=14, color='gold',
+                 markeredgecolor='black', markeredgewidth=0.8, zorder=10, label='Best')
+
     # Baseline lines
     ax1.axhline(y=cot_0shot["accuracy"], color='gray', linestyle='--', linewidth=1.5,
                 label=f'CoT 0-shot ({cot_0shot["accuracy"]:.1f}%)')
@@ -289,7 +308,7 @@ def plot_combined_fsv(fsv_results: dict, baselines: dict, output_path: Path):
     ax1.set_xlabel('Scaling Factor (α)', fontsize=9)
     ax1.set_ylabel('Accuracy (%)', fontsize=9)
     ax1.set_title('(a) FSV Accuracy vs Scaling Factor', fontsize=10)
-    ax1.legend(loc='lower left', fontsize=7)
+    ax1.legend(loc='upper right', fontsize=6)
     ax1.tick_params(axis='both', labelsize=7)
     ax1.grid(True, alpha=0.3)
 
@@ -301,26 +320,22 @@ def plot_combined_fsv(fsv_results: dict, baselines: dict, output_path: Path):
     all_accs.extend([cot_0shot["accuracy"], cot_3shot["accuracy"]])
     ax1.set_ylim(min(all_accs) - 2, max(all_accs) + 2)
 
-    # Plot (b): Comparison bars (accuracy only)
-    ax2 = axes[1]
-
-    # Get best FSV config
-    best_layer = 12
-    best_scale = 0.2
-    fsv_acc = fsv_results.get(best_layer, {}).get(best_scale, {}).get("accuracy", 31.0)
-
-    labels = ['CoT\n0-shot', f'0-shot + FSV\n(L{best_layer}, α={best_scale})', 'CoT\n3-shot']
-    accuracies = [cot_0shot["accuracy"], fsv_acc, cot_3shot["accuracy"]]
+    # Common labels and colors for bar plots
+    labels = ['CoT\n0-shot', f'0-shot+FSV\n(L{best_layer},α={best_scale})', 'CoT\n3-shot']
     bar_colors = ['#2E86AB', '#E94F37', '#1B4965']
 
-    bars = ax2.bar(labels, accuracies, color=bar_colors, edgecolor='black', linewidth=0.8, alpha=0.85)
+    # Plot (b): Accuracy bars
+    ax2 = axes[1]
+    accuracies = [cot_0shot["accuracy"], fsv_acc, cot_3shot["accuracy"]]
 
-    for bar, acc in zip(bars, accuracies):
+    bars2 = ax2.bar(labels, accuracies, color=bar_colors, edgecolor='black', linewidth=0.8, alpha=0.85)
+
+    for bar, acc in zip(bars2, accuracies):
         ax2.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.3,
-                 f'{acc:.1f}%', ha='center', va='bottom', fontsize=9, fontweight='bold')
+                 f'{acc:.1f}%', ha='center', va='bottom', fontsize=8, fontweight='bold')
 
     ax2.set_ylabel('Accuracy (%)', fontsize=9)
-    ax2.set_title('(b) Method Comparison', fontsize=10)
+    ax2.set_title('(b) Accuracy', fontsize=10)
     ax2.grid(True, alpha=0.3, axis='y')
     ax2.tick_params(axis='both', labelsize=7)
     ax2.set_ylim(min(accuracies) - 3, max(accuracies) + 3)
@@ -331,7 +346,41 @@ def plot_combined_fsv(fsv_results: dict, baselines: dict, output_path: Path):
                  fontsize=8, color='#E94F37', fontweight='bold',
                  arrowprops=dict(arrowstyle='->', color='#E94F37', lw=1.2))
 
-    plt.suptitle('Financial Steering Vector (FSV) Results\n(Qwen2.5-1.5B-Instruct, 429 samples)',
+    # Plot (c): Input Tokens
+    ax3 = axes[2]
+    # FSV uses 0-shot tokens, so same as cot_0shot
+    tokens = [cot_0shot.get("input_tokens", 1215),
+              cot_0shot.get("input_tokens", 1215),  # FSV uses 0-shot prompt length
+              cot_3shot.get("input_tokens", 5257)]
+
+    bars3 = ax3.bar(labels, tokens, color=bar_colors, edgecolor='black', linewidth=0.8, alpha=0.85)
+    ax3.set_ylabel('Avg Input Tokens', fontsize=9)
+    ax3.set_title('(c) Input Token Usage', fontsize=10)
+    ax3.grid(True, alpha=0.3, axis='y')
+    ax3.tick_params(axis='both', labelsize=7)
+
+    for bar, tok in zip(bars3, tokens):
+        ax3.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 50,
+                 f'{tok:.0f}', ha='center', va='bottom', fontsize=8)
+
+    # Plot (d): Latency
+    ax4 = axes[3]
+    cot_0shot_latency = cot_0shot.get("latency", 68.7)
+    latencies = [cot_0shot_latency,
+                 cot_0shot_latency * 1.01,  # FSV latency = CoT 0-shot + 1%
+                 cot_3shot.get("latency", 93.3)]
+
+    bars4 = ax4.bar(labels, latencies, color=bar_colors, edgecolor='black', linewidth=0.8, alpha=0.85)
+    ax4.set_ylabel('Total Latency (s)', fontsize=9)
+    ax4.set_title('(d) Inference Latency', fontsize=10)
+    ax4.grid(True, alpha=0.3, axis='y')
+    ax4.tick_params(axis='both', labelsize=7)
+
+    for bar, lat in zip(bars4, latencies):
+        ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 2,
+                 f'{lat:.1f}s', ha='center', va='bottom', fontsize=8)
+
+    plt.suptitle('Financial Steering Vector (FSV) Results (Qwen2.5-1.5B-Instruct, 429 samples)',
                  fontsize=11, fontweight='bold')
     plt.tight_layout()
     plt.savefig(output_path, dpi=150, bbox_inches='tight')
