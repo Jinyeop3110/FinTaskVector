@@ -16,9 +16,9 @@ Efficiency and latency remain key challenges in deploying Large Language Models 
 
 Recently, Large Language Models (LLMs) have been actively adopted in the finance domain. Li et al. (2023) provide a comprehensive survey of LLM applications in finance, covering sentiment analysis, financial reasoning, and risk assessment. Ding et al. (2024) demonstrate LLM-based agents for financial trading that integrate news summarization, fundamental analysis, and decision-making. Chen et al. (2021) introduce FinQA, a benchmark for numerical reasoning over financial data requiring multi-step calculations from tables and text.
 
-Despite this recent success, high latency and computational costs of LLM inference limit direct application to high-frequency or latency-sensitive financial sectors. While there are many fundamental reasons why LLM inference is costly—such as large model sizes and the autoregressive decoding bottleneck—one major factor is **prompt length**. In particular, **few-shot in-context learning (ICL)** significantly improves task performance by prepending demonstrations to the prompt, but each demonstration adds hundreds to thousands of tokens, increasing inference latency (see Section 2.1 for background). This creates a fundamental trade-off between accuracy and efficiency.
+Despite this recent success, high latency and computational costs of LLM inference limit direct application to high-frequency or latency-sensitive financial sectors. While there are many fundamental reasons why LLM inference is costly—such as large model sizes and the autoregressive decoding bottleneck—one major factor is **prompt length**. In particular, **few-shot in-context learning (ICL)** significantly improves task performance by prepending demonstrations to the prompt, but each demonstration adds hundreds to thousands of tokens, increasing inference latency (see [Section 2.1](#21-few-shot-in-context-learning) for background). This creates a fundamental trade-off between accuracy and efficiency.
 
-**Steering vectors** offer a potential method to reduce this prompt overhead. The core idea is to extract a direction in the model's activation space that encodes the effect of few-shot demonstrations, then apply this vector during inference to achieve similar benefits without the actual demonstrations in the prompt (see Section 2.2 for background). If successful, this approach could dramatically reduce inference cost while preserving most of the accuracy gains from few-shot learning.
+**Steering vectors** offer a potential method to reduce this prompt overhead. The core idea is to extract a direction in the model's activation space that encodes the effect of few-shot demonstrations, then apply this vector during inference to achieve similar benefits without the actual demonstrations in the prompt (see [Section 2.2](#22-steering-vectors-and-activation-engineering) for background). If successful, this approach could dramatically reduce inference cost while preserving most of the accuracy gains from few-shot learning.
 
 In this report, we address these two research questions. We use the FinQA dataset (Chen et al., 2021), which contains financial questions requiring multi-step calculations over tables and text (e.g., "What is the EBITDA margin of Company A in 2020 based on the table?"), and evaluate using Qwen2.5-1.5B-Instruct. For the first question (*RQ1*), we demonstrate that adding in-context demonstrations increases accuracy when combined with Chain-of-Thought prompting, which instructs the model to reason step by step before producing an answer. For the second question (*RQ2*), we extract steering vectors by comparing hidden state representations between 0-shot and 3-shot prompts at the token position where reasoning begins, and evaluate whether these vectors can transfer the benefits of few-shot learning to zero-shot inference—potentially achieving few-shot performance without the associated token overhead.
 
@@ -50,15 +50,6 @@ This approach offers a key advantage: it can potentially replicate the effect of
 ---
 
 ## 3. Methods
-
-**Methods Overview:**
-
-| Experiment | Goal | Key Variables |
-|------------|------|---------------|
-| Vanilla vs CoT | Measure reasoning instruction impact | Prompt type |
-| CoT 0-4 shot | Find optimal ICL demonstrations | N-shots (0-4) |
-| FSV extraction | Distill few-shot into steering vector | Layer (12, 16), token position |
-| FSV evaluation | Test if FSV can replace ICL tokens | Scale α (0.1-1.0) |
 
 ### 3.1 Dataset
 
@@ -108,7 +99,7 @@ Inference is performed using the vLLM library for efficient batch processing and
 | Batch size | 8-32 (dynamic) |
 | Precision | bfloat16 |
 
-**Hardware:** Experiments were conducted on NVIDIA H100 GPUs (80GB HBM3). The small model size (1.5B parameters) allows single-GPU inference, enabling rapid experimentation.
+**Hardware:** Experiments were conducted on 4 NVIDIA H100 GPUs (80GB HBM3). Each inference run over the 429-sample evaluation set takes approximately 20 minutes.
 
 ### 3.4 Prompting Strategies
 
@@ -139,7 +130,7 @@ Reasoning:
 CoT prompting with N in-context learning demonstrations prepended to the query. The prompt structure is:
 
 ```
-[System instruction]
+Given the financial context and table, solve the problem step by step.
 
 --- Demonstration 1 ---
 Context: [Financial table and text from training set]
@@ -171,7 +162,7 @@ ICL demonstrations are sampled randomly from the training set. We run 16 experim
 
 #### 3.4.4 Chain-of-Thought + FSV (CoT + FSV)
 
-CoT 0-shot prompting augmented with Financial Steering Vector (FSV) perturbation at inference time. This approach uses the same zero-shot CoT prompt structure (Section 3.4.2) but applies a steering vector extracted from few-shot demonstrations to the model's hidden states during generation (see Section 3.5 for extraction details). The key advantage is achieving near few-shot performance without the token overhead of actual in-context demonstrations.
+CoT 0-shot prompting augmented with Financial Steering Vector (FSV) perturbation at inference time. This approach uses the same zero-shot CoT prompt structure ([Section 3.4.2](#342-chain-of-thought-cot-zero-shot)) but applies a steering vector extracted from few-shot demonstrations to the model's hidden states during generation (see [Section 3.5](#35-financial-steering-vector-fsv) for extraction details). The key advantage is achieving near few-shot performance without the token overhead of actual in-context demonstrations.
 
 
 ### 3.5 Financial Steering Vector (FSV)
@@ -180,7 +171,7 @@ CoT 0-shot prompting augmented with Financial Steering Vector (FSV) perturbation
 
 We investigate whether the performance gains from in-context learning can be distilled into a steering vector that can be applied to zero-shot prompts. The key insight is that by comparing hidden representations between 0-shot and N-shot prompts, we can extract a direction in activation space that encodes the "reasoning pattern" induced by ICL demonstrations.
 
-**Token Position.** We extract hidden representations at the token position corresponding to "Reasoning:" in the prompt—the point where the model transitions from input processing to reasoning generation. Since prompts may contain multiple occurrences of "Reasoning:" (from ICL demonstrations), we find the **last occurrence** using progressive token decoding (see Appendix D for implementation details).
+**Token Position.** We extract hidden representations at the token position corresponding to "Reasoning:" in the prompt—the point where the model transitions from input processing to reasoning generation. Since prompts may contain multiple occurrences of "Reasoning:" (from ICL demonstrations), we find the **last occurrence** using progressive token decoding (see [Appendix D](#d-token-position-extraction-implementation) for implementation details).
 
 **Position Alignment.** A critical challenge is that 0-shot and N-shot prompts have different sequence lengths. In models using Rotary Position Embeddings (RoPE), tokens at different absolute positions receive different positional encodings, which can confound the semantic comparison. We address this by **left-padding** both prompts to the same length, ensuring "Reasoning:" is at the same absolute position for both conditions.
 
